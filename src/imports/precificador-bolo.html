@@ -592,6 +592,47 @@
   .price-history-item .phi-val{ font-family: 'JetBrains Mono', monospace; color: var(--cream); }
   .price-history-item .phi-delta.up{ color: var(--bad); }
   .price-history-item .phi-delta.down{ color: var(--good); }
+
+/* Responsive editing and persistent recipe summary */
+:root { --cream-dim: #b2bcb6; }
+body { padding-bottom: 180px; }
+button:disabled { opacity:.4; cursor:not-allowed; }
+button:focus-visible, summary:focus-visible, a:focus-visible { outline:2px solid var(--carrot); outline-offset:4px; }
+.card h2, details.card summary, .add-btn, nav.tabs button { letter-spacing:.5px; }
+.proj-input { flex-wrap:wrap; gap:8px; }
+.proj-input > label { flex:1 0 100%; }
+.proj-input > input[type=text], .proj-input > select { width:100%; min-width:0; }
+nav.tabs { overflow-x:auto; }
+nav.tabs button { min-width:85px; min-height:44px; }
+.data-status { display:flex; flex-wrap:wrap; gap:8px 20px; color:var(--cream-dim); font-size:12px; margin:12px 0; }
+.quick-summary { position:fixed; z-index:50; bottom:0; left:0; right:0; padding:12px max(16px, calc((100vw - 720px)/2)) max(12px, env(safe-area-inset-bottom)); background:#171e18; border-top:1px solid #637b3a; box-shadow:0 -6px 24px #0005; }
+.quick-summary .metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; }
+.quick-summary small { display:block; color:var(--cream-dim); font-size:11px; }
+.quick-summary strong { display:block; font-size:16px; margin-top:4px; }
+.quick-summary .selling { color:var(--carrot); }
+.quick-summary p { font-size:12px; margin:8px 0 0; color:var(--cream-dim); }
+.undo-bar { position:fixed; z-index:60; top:12px; left:50%; transform:translateX(-50%); width:min(92%,680px); background:#26352a; border:1px solid var(--good); border-radius:12px; padding:12px; box-shadow:0 4px 25px #0008; }
+.undo-bar button { margin-left:10px; padding:8px; cursor:pointer; }
+.table-scroll { overflow-x:auto; }
+@media(max-width:600px) {
+  body { padding:16px 10px 220px; }
+  .card { padding:16px 12px; }
+  .btn-row, .backup-card { flex-wrap:wrap; }
+  .btn-row > *, .backup-card > * { flex:1 1 140px; }
+  input[type=text], input[type=number], select { font-size:16px; min-height:44px; }
+  .quick-summary .metrics { grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px 16px; }
+  #recipeBody { display:block; }
+  #recipeBody tr { display:grid; grid-template-columns:minmax(0,1fr) 75px 85px 40px; gap:2px; padding:10px 0; border-bottom:1px solid var(--line); }
+  #recipeBody td { border:none; min-width:0; padding:3px; }
+  #recipeBody td:first-child { grid-column:1 / -1; }
+  #recipeBody select { width:100%; }
+  #recipeBody input { width:100%; min-width:0; }
+  .recipe-table, .recipe-table > tbody { display:block; }
+  .recipe-table thead { display:none; }
+  .recipe-table .total-row { display:flex; justify-content:space-between; }
+  #recipeCategoryFilter { flex-wrap:wrap; }
+}
+
 </style>
 </head>
 <body>
@@ -1145,7 +1186,20 @@ function loadJSON(key, fallback){
   try{ const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; }
   catch(e){ return fallback; }
 }
-function saveJSON(key, val){ localStorage.setItem(key, JSON.stringify(val)); }
+function saveJSON(key, val){
+  try {
+    localStorage.setItem(key, JSON.stringify(val));
+    const status = document.getElementById('saveStatus');
+    if(status && !window.storageSaveFailed) status.textContent = 'Salvo neste navegador';
+    return true;
+  } catch(error) {
+    window.storageSaveFailed = true;
+    const status = document.getElementById('saveStatus');
+    if(status) status.textContent = 'Falha ao salvar — exporte um backup';
+    toast('Não foi possível salvar no navegador. Exporte um backup antes de fechar.', 'error', 6000);
+    throw error;
+  }
+}
 
 function makeItem(name, unit, qty, price, pesoUnid, packageSize){
   return { id: uid(), name, unit, pesoUnid, packageSize: packageSize || qty,
@@ -1256,7 +1310,7 @@ const BACKUP_KEYS = [
   'bolo_portionWeight','bolo_yieldMode','bolo_manualYield','bolo_proLabore',
   'bolo_monthlyTax','bolo_reinvestPct','bolo_capitalAtual','bolo_savedRecipes',
   'bolo_qtyPerDay','bolo_productionLog','bolo_products','bolo_laborCostPerHour','bolo_ifoodFeePct','bolo_cardFeePct',
-  'bolo_stockValueHistory'
+  'bolo_stockValueHistory', 'bolo_workspaces', 'bolo_activeWs', 'bolo_priceHistory'
 ];
 
 /* ---------- helpers ---------- */
@@ -1839,6 +1893,7 @@ document.getElementById('produceRecipeBtn').addEventListener('click', () => {
   }
   if(!recipe.length){ toast('Não há ingredientes na receita.', 'warn'); return; }
 
+  const productionBefore = JSON.stringify({stock, productionLog});
   const costPerBatch = getTotalCost();
 
   recipe.forEach(line => {
@@ -1858,6 +1913,7 @@ document.getElementById('produceRecipeBtn').addEventListener('click', () => {
   if(productionLog.length > 200) productionLog.length = 200;
 
   persist();
+  offerUndoProduction(productionBefore);
   renderStock();
   renderProductionLog();
   refreshAllRecipeRowCosts();
@@ -2013,6 +2069,7 @@ document.getElementById('deleteRecipeBtn').addEventListener('click', () => {
   if(!rec) return;
   const usage = findProductsUsingRecipe(id);
   if(!confirmDelete(rec.name, usage)) return;
+  offerUndoRecipe(JSON.parse(JSON.stringify(rec)));
   savedRecipes = savedRecipes.filter(r => r.id !== id);
   persist(); renderSavedRecipesList();
 });
@@ -2237,6 +2294,7 @@ function recalcAll(){
     heroPriceInput.value = heroPrice.toFixed(2);
   }
   document.getElementById('marginValue').textContent = marginPct + '%';
+  updateQuickSummary(total, totalGrams, numPortions, heroPrice);
 
   const row = document.getElementById('marginTableRow');
   row.innerHTML = '';
@@ -2513,10 +2571,27 @@ document.getElementById('genShoppingListBtn').addEventListener('click', () => {
 });
 
 document.getElementById('exportBackupBtn').addEventListener('click', () => {
+  try { persist(); } catch(error) { /* Export in-memory data even when storage is full. */ }
   const data = {};
   BACKUP_KEYS.forEach(k => {
     const v = localStorage.getItem(k);
     if(v !== null) data[k] = JSON.parse(v);
+  });
+  Object.assign(data, {
+    bolo_stock: stock, bolo_recipe: recipe, bolo_extraCosts: extraCosts,
+    bolo_taxaImposto: taxaImpostoPct, bolo_margin: marginPct,
+    bolo_portionWeight: portionWeight, bolo_yieldMode: yieldMode,
+    bolo_manualYield: manualYield, bolo_proLabore: proLabore,
+    bolo_monthlyTax: monthlyTax, bolo_reinvestPct: reinvestPct,
+    bolo_capitalAtual: capitalAtual, bolo_savedRecipes: savedRecipes,
+    bolo_qtyPerDay: qtyPerDayVal, bolo_productionLog: productionLog,
+    bolo_products: products, bolo_laborCostPerHour: laborCostPerHour,
+    bolo_ifoodFeePct: ifoodFeePct, bolo_cardFeePct: cardFeePct,
+    bolo_stockValueHistory: stockValueHistory
+  });
+  const activeWorkspace = data.bolo_workspaces?.find(ws => ws.id === data.bolo_activeWs);
+  if(activeWorkspace) Object.assign(activeWorkspace, {
+    recipe, extraCosts, yieldMode, manualYield, portionWeight, taxaImpostoPct, marginPct
   });
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
@@ -2527,6 +2602,8 @@ document.getElementById('exportBackupBtn').addEventListener('click', () => {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+  try { saveJSON('bolo_lastBackupAt', new Date().toISOString()); } catch(error) { /* Download remains available. */ }
+  updateBackupStatus();
 });
 
 document.getElementById('importBackupInput').addEventListener('change', (e) => {
@@ -3436,6 +3513,89 @@ renderProductsList = function(){
   });
 };
 renderProductsList();
+
+/* Usability and local data protection */
+let pendingUndo = null;
+function showUndo(label, action) {
+  pendingUndo = action;
+  document.getElementById('undoLabel').textContent = label;
+  document.getElementById('undoBar').hidden = false;
+}
+function offerUndoRecipe(rec) {
+  showUndo('Receita excluída.', () => {
+    if(savedRecipes.some(r => r.id === rec.id || r.name === rec.name)) {
+      toast('Já existe uma receita com esse nome. Renomeie antes de restaurar.', 'warn'); return false;
+    }
+    savedRecipes.push(rec); persist(); renderSavedRecipesList(); return true;
+  });
+}
+function offerUndoProduction(before) {
+  const after = JSON.stringify({stock, productionLog});
+  showUndo('Baixa de estoque registrada.', () => {
+    if(JSON.stringify({stock, productionLog}) !== after) {
+      toast('O estoque mudou desde essa baixa. Não foi restaurado para preservar as alterações.', 'warn'); return false;
+    }
+    const previous = JSON.parse(before);
+    stock = previous.stock; productionLog = previous.productionLog;
+    persist(); renderStock(); renderProductionLog(); refreshAllRecipeRowCosts(); recalcAll(); return true;
+  });
+}
+function updateBackupStatus() {
+  const el = document.getElementById('backupStatus');
+  if(!el) return;
+  const date = loadJSON('bolo_lastBackupAt', null);
+  el.textContent = date ? 'Última exportação: ' + new Date(date).toLocaleString('pt-BR') : 'Nenhum backup exportado neste navegador';
+}
+function updateQuickSummary(total, grams, portions, price) {
+  const el = document.getElementById('quickSummary');
+  if(!el) return;
+  document.getElementById('quickTotal').textContent = fmt(total);
+  document.getElementById('quickYield').textContent = Math.round(grams) + ' g';
+  document.getElementById('quickPortion').textContent = portions > 0 ? fmt(total / portions) : 'Não definido';
+  document.getElementById('quickPrice').textContent = fmt(price);
+  document.getElementById('quickPriceLabel').textContent = portions > 0 ? 'Preço por porção' : 'Preço da receita inteira';
+  document.getElementById('quickHint').textContent = portions > 0
+    ? portions + ' porções • Receita em edição'
+    : 'Defina o rendimento e o peso da porção em Porcionamento para calcular o preço unitário.';
+  el.hidden = !document.getElementById('tab-receita').classList.contains('active') && !document.getElementById('tab-preco').classList.contains('active');
+}
+function updateRecipeActions() {
+  const selected = !!savedRecipeSelect.value;
+  document.getElementById('loadRecipeBtn').disabled = !selected;
+  document.getElementById('deleteRecipeBtn').disabled = !selected;
+}
+document.querySelector('header').insertAdjacentHTML('afterend',
+  '<div class="data-status"><span id="saveStatus" role="status">Dados armazenados neste navegador</span><span id="backupStatus"></span></div>');
+document.body.insertAdjacentHTML('beforeend',
+  '<aside class="quick-summary" id="quickSummary" aria-label="Resumo da receita"><div class="metrics"><div><small>Custo total</small><strong id="quickTotal"></strong></div><div><small>Rendimento</small><strong id="quickYield"></strong></div><div><small>Custo por porção</small><strong id="quickPortion"></strong></div><div class="selling"><small id="quickPriceLabel"></small><strong id="quickPrice"></strong></div></div><p id="quickHint"></p></aside><div class="undo-bar" id="undoBar" hidden role="status"><span id="undoLabel"></span><button type="button" id="undoAction">Desfazer</button><button type="button" id="undoDismiss" aria-label="Fechar aviso">×</button></div>');
+document.getElementById('undoAction').addEventListener('click', () => {
+  if(pendingUndo && pendingUndo()) { pendingUndo = null; document.getElementById('undoBar').hidden = true; updateRecipeActions(); toast('Alteração desfeita.'); }
+});
+document.getElementById('undoDismiss').addEventListener('click', () => { document.getElementById('undoBar').hidden = true; pendingUndo = null; });
+savedRecipeSelect.addEventListener('change', updateRecipeActions);
+const previousRenderSaved = renderSavedRecipesList;
+renderSavedRecipesList = function(){ previousRenderSaved(); updateRecipeActions(); };
+document.getElementById('saveRecipeBtn').addEventListener('click', updateRecipeActions);
+document.querySelector('nav.tabs').addEventListener('click', () => recalcAll());
+document.querySelectorAll('.proj-input').forEach(row => {
+  const label = row.querySelector('label'), input = row.querySelector('input, select');
+  if(label && input && input.id) label.htmlFor = input.id;
+});
+document.getElementById('recipeBody').closest('table').classList.add('recipe-table');
+document.querySelectorAll('table:not(.recipe-table)').forEach(table => {
+  const wrapper = document.createElement('div'); wrapper.className = 'table-scroll';
+  table.before(wrapper); wrapper.append(table);
+});
+// Keep production separate from recipe preparation.
+const productionCard = document.getElementById('produceRecipeBtn').closest('.card');
+const productionDetails = document.createElement('details'); productionDetails.className = 'card';
+const productionHeading = document.createElement('summary'); productionHeading.textContent = 'Registrar produção e baixar estoque';
+const productionBody = document.createElement('div'); productionBody.className = 'details-body';
+productionCard.querySelector('h2').remove();
+while(productionCard.firstChild) productionBody.append(productionCard.firstChild);
+productionDetails.append(productionHeading, productionBody); productionCard.replaceWith(productionDetails);
+updateRecipeActions(); updateBackupStatus(); recalcAll();
+
 </script>
 </body>
 </html>
